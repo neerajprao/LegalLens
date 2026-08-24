@@ -1,0 +1,22 @@
+# Python
+backend/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+backend/*.egg-info/
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+
+# Secrets
+.env
+backend/.env
+
+# Local data (case data, evidence, vector store, sqlite db) — never committed
+data/db/
+data/evidence/
+data/vector_store/
+
+# OS
+.DS_Store
