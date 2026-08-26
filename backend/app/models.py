@@ -64,6 +64,12 @@ class Case(Base):
     statements: Mapped[list["Statement"]] = relationship(back_populates="case", cascade="all, delete-orphan")
     claims: Mapped[list["Claim"]] = relationship(back_populates="case", cascade="all, delete-orphan")
     evidence_items: Mapped[list["Evidence"]] = relationship(back_populates="case", cascade="all, delete-orphan")
+    interview_turns: Mapped[list["InterviewTurn"]] = relationship(
+        back_populates="case", cascade="all, delete-orphan", order_by="InterviewTurn.created_at"
+    )
+    audit_log: Mapped[list["AuditLogEntry"]] = relationship(
+        cascade="all, delete-orphan", order_by="AuditLogEntry.created_at"
+    )
 
 
 class Party(Base):
@@ -142,3 +148,50 @@ class DocumentDraft(Base):
     content: Mapped[str] = mapped_column(Text)
     generated_at: Mapped[datetime] = mapped_column(default=_utcnow)
     review_status: Mapped[str] = mapped_column(String, default="ai_draft")
+
+
+class InterviewTurn(Base):
+    """Not in CLAUDE.md §10.2's original conceptual sketch — added to satisfy
+    §7's audit-logging requirement ("all interview exchanges... must be
+    logged") and §9.3's contradiction-tagging requirement, neither of which
+    fit any existing entity there."""
+
+    __tablename__ = "interview_turns"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id"))
+    question: Mapped[str] = mapped_column(Text)
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Not a real FK: a contradiction can point at either a Statement.id or another
+    # InterviewTurn.id (polymorphic reference by design, not an oversight).
+    contradicts_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    contradiction_explanation: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    answered_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+    case: Mapped["Case"] = relationship(back_populates="interview_turns")
+
+
+class AuditLogEntry(Base):
+    """Append-only log of every material Case Builder change. Deliberately
+    doing double duty as both CLAUDE.md §7's audit-logging requirement
+    ("all interview exchanges, retrieved sources, and generated outputs...
+    logged") and §10.2's unresolved versioning ASSUMPTION TO VALIDATE
+    ("should case state be versioned per material change") — rather than
+    building two separate mechanisms, one append-only event log answers
+    both: "what happened" (audit) and "what did the system know at time T"
+    (versioning, reconstructable by replaying entries up to a timestamp).
+    This is NOT full state snapshotting/event-sourcing — payload is a
+    free-form JSON string describing the one change, not a complete case
+    snapshot; reconstructing full state at time T means replaying entries,
+    not looking up one row. That's a real limitation, not hidden."""
+
+    __tablename__ = "audit_log_entries"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id"))
+    event_type: Mapped[str] = mapped_column(String)
+    summary: Mapped[str] = mapped_column(Text)
+    payload: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)

@@ -12,6 +12,8 @@ dependencies = [
     "chromadb>=0.5",
     "python-multipart>=0.0.9",
     "pypdf>=4.3",
+    "pillow>=10.0",
+    "pytesseract>=0.3.10",
 ]
 
 [project.optional-dependencies]

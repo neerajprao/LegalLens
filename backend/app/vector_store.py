@@ -22,9 +22,10 @@ def query_provisions(query_text: str, n_results: int = 5) -> list[dict]:
 
     result = collection.query(query_texts=[query_text], n_results=min(n_results, collection.count()))
     hits = []
+    ids = result.get("ids") or [[]]
     documents = result.get("documents") or [[]]
     metadatas = result.get("metadatas") or [[]]
     distances = result.get("distances") or [[]]
-    for doc, meta, distance in zip(documents[0], metadatas[0], distances[0]):
-        hits.append({"text": doc, "metadata": meta, "distance": distance})
+    for chunk_id, doc, meta, distance in zip(ids[0], documents[0], metadatas[0], distances[0]):
+        hits.append({"chunk_id": chunk_id, "text": doc, "metadata": meta, "distance": distance})
     return hits
