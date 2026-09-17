@@ -37,7 +37,7 @@ export function DevilsAdvocatePanel({ caseId, triggerSignal = 0 }: { caseId: str
       {result && !result.insufficient_case_state && (
         <div style={{ marginTop: '0.5rem' }}>
           <h3>Weaknesses</h3>
-          {result.weaknesses.map((w, i) => {
+          {(result.weaknesses ?? []).map((w, i) => {
             const sev = w.severity ?? 'unspecified'
             return (
               <div key={i} style={cardStyle}>
@@ -46,22 +46,22 @@ export function DevilsAdvocatePanel({ caseId, triggerSignal = 0 }: { caseId: str
               </div>
             )
           })}
-          {result.weaknesses.length === 0 && <p style={emptyStateStyle}>None flagged.</p>}
+          {(result.weaknesses ?? []).length === 0 && <p style={emptyStateStyle}>None flagged.</p>}
 
           <h3>Arguments the other side could make</h3>
           <ul>
-            {result.opposing_arguments.map((a, i) => (
+            {(result.opposing_arguments ?? []).map((a, i) => (
               <li key={i}>{a}</li>
             ))}
-            {result.opposing_arguments.length === 0 && <li style={emptyStateStyle}>None flagged.</li>}
+            {(result.opposing_arguments ?? []).length === 0 && <li style={emptyStateStyle}>None flagged.</li>}
           </ul>
 
           <h3>Alternative interpretations</h3>
           <ul>
-            {result.alternative_interpretations.map((a, i) => (
+            {(result.alternative_interpretations ?? []).map((a, i) => (
               <li key={i}>{a}</li>
             ))}
-            {result.alternative_interpretations.length === 0 && <li style={emptyStateStyle}>None flagged.</li>}
+            {(result.alternative_interpretations ?? []).length === 0 && <li style={emptyStateStyle}>None flagged.</li>}
           </ul>
         </div>
       )}

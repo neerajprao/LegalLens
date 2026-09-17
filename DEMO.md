@@ -1,6 +1,6 @@
 # Legal Lens — Live Demo Script
 
-The LLM is now **fully local** — Qwen3.5 9B running via Ollama, no API key, no internet dependency, no rate limit, no cost (switched 2026-08-26 at the user's request; see `CLAUDE.md` §19 and `PROJECT_REPORT.md` §7 for the full history: Anthropic → Gemini free tier → local). This makes the demo simpler and stronger than either cloud stage was: nothing can 429, nothing needs a credential you might forget to bring, and the whole pipeline was verified to run start to finish live before this script was written (`backend/e2e_smoke.py`, 13 of 13 stages, no mocking — see `PROJECT_REPORT.md` §6).
+The LLM is now **fully local** — `qwen2.5:7b-instruct` running via Ollama, no API key, no internet dependency, no rate limit, no cost (switched 2026-08-26 at the user's request; see `CLAUDE.md` §19 and `PROJECT_REPORT.md` §7 for the full history: Anthropic → Gemini free tier → local Qwen3.5 9B, then swapped again 2026-09-16 to the current smaller/faster model purely for latency). This makes the demo simpler and stronger than either cloud stage was: nothing can 429, nothing needs a credential you might forget to bring, and the whole pipeline was verified to run start to finish live before this script was written (`backend/e2e_smoke.py`, 13 of 13 stages, no mocking — see `PROJECT_REPORT.md` §6).
 
 The only real constraint: each real model call takes roughly **10–20 seconds on Apple M3 Pro** (longer for the more complex prompts like Document Generation) — this is CPU/GPU inference on a laptop, not a data-center API, so build that pacing into how you narrate the demo rather than rushing between clicks.
 
@@ -57,7 +57,9 @@ Either way: open `http://localhost:5173`. Confirm `curl http://localhost:8000/he
        print(h['metadata']['act_name'], '§' + h['metadata']['section_number'], '-', h['metadata']['section_title'][:60])
    "
    ```
-   Returns real matching sections from the real 5,136-chunk corpus of 13 government PDFs — never invented.
+   Returns real matching sections from the real 2,761-chunk corpus of 13 government PDFs — never invented.
+
+   Back in the UI, click **"View in source"** on any retrieved provision card — it opens the real source PDF with that provision's own text highlighted in gold, baked in server-side by `pdf_highlight.py` (PyMuPDF), not just the browser's own "find in page." *Say: "This used to just jump to the page — it originally had a real bug where the linked page was the Act's own Table of Contents, not the actual explanation, because a duplicate title-only chunk was winning retrieval. Fixed by deduplicating the corpus and highlighting the real passage server-side."*
 9. **Devil's Advocate panel**, **Legal Strategy panel** — for Strategy, specifically demo the acknowledgment gate: clicking "View suggested options" first shows *only* a disclaimer with an "I understand" button — nothing else renders until that's clicked. A real UI implementation of a documented product-boundary decision (`CLAUDE.md` §8.5).
 10. **Question & Answer Preparation panel** — try a case with a claim that has no linked evidence and watch it return `suggested_response: null` with a real gap note instead of making something up.
 
@@ -75,8 +77,10 @@ This is real local inference on a laptop, not a guaranteed-fast cloud API — na
 ```bash
 cd backend && python -m pytest -v
 ```
-87 tests, all passing, in under 6 seconds. Walk through a few interesting ones out loud:
-- `test_citation_accuracy.py` — checks all 5,136 real corpus chunks for label/text self-consistency (this test caught a real bug — see `PROJECT_REPORT.md` §6).
+116 tests, all passing, in under 6 seconds. Walk through a few interesting ones out loud:
+- `test_citation_accuracy.py` — checks all 2,761 real corpus chunks for label/text self-consistency (this test caught a real bug — see `PROJECT_REPORT.md` §6).
+- `test_ingestion.py::test_chunk_by_section_drops_table_of_contents_duplicate_in_favor_of_real_section_body` — the regression test for the 2026-09-17 TOC-duplicate bug that started this whole line of fixes.
+- `test_pdf_highlight.py` — asserts real highlight annotations land on the correct page of the real source PDF, and only there.
 - `test_adversarial.py` — a test that *proves a real gap exists* (a fabricated citation embedded in prose isn't caught) rather than only testing what already passes.
 - `test_case_strength.py::test_case_strength_never_returns_a_numeric_score` — walks the entire API response tree asserting no score-shaped key ever appears.
 - `test_fact_extraction_retry.py::test_wrong_shaped_but_valid_json_is_treated_as_a_parse_failure` — the regression test for the real crash bug the local model exposed, and how it's now handled.

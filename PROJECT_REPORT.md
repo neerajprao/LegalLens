@@ -90,18 +90,18 @@ Originally, three items were never closeable within this project's actual constr
 
 ## 8. Testing & Validation Summary
 
-- **87 automated tests, 23 test files, 100% passing.**
-- Categories: deterministic-logic tests (claim status, case-strength band, timeline sorting), agent-gating tests (empty-case short-circuits, acknowledgment gates), fabrication-guard tests (citation binding stripping fabricated chunk_ids), retrieval-accuracy tests (14 real gold-standard queries against the live corpus, no mocking), citation-accuracy tests (corpus-wide self-consistency, no mocking), adversarial tests (a documented hallucination gap, an overconfidence-resistance proof), encryption tests (real file upload → real on-disk bytes verified encrypted), and error-handling tests.
+- **116 automated tests, 28 test files, 100% passing.**
+- Categories: deterministic-logic tests (claim status, case-strength band, timeline sorting), agent-gating tests (empty-case short-circuits, acknowledgment gates), fabrication-guard tests (citation binding stripping fabricated chunk_ids), retrieval-accuracy tests (14 real gold-standard queries against the live corpus, no mocking — 10 passing "top hit" assertions + 4 documented known-weakness markers as of 2026-09-17), citation-accuracy tests (corpus-wide self-consistency, no mocking), PDF-highlighting tests (real annotation rendering against the real source PDF, added 2026-09-17), adversarial tests (a documented hallucination gap, an overconfidence-resistance proof), encryption tests (real file upload → real on-disk bytes verified encrypted), and error-handling tests.
 - Frontend: TypeScript strict-mode type-checking passes cleanly; the app has been live-verified in a real (Playwright-driven) Chromium browser multiple times across the project, with zero console errors each time.
 
 ## 9. Codebase Metrics
 
 - **58** backend + frontend source files (`.py`/`.ts`/`.tsx`)
-- **13** real government legislation PDFs ingested, **5,136** embedded/searchable text chunks
-- **19** REST API endpoints
-- **9** specialist AI agents + 1 orchestrator
-- **9** frontend feature panels organized into a 3-stage guided flow
-- **79** automated tests, 21 test files
+- **13** real government legislation PDFs ingested, **2,761** embedded/searchable text chunks
+- **25** REST API endpoints
+- **10** specialist AI agents + 1 orchestrator
+- **10** frontend feature panels organized into a 3-stage guided flow
+- **116** automated tests, 28 test files
 
 ## 10. Limitations & Future Work
 

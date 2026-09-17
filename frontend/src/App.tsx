@@ -7,6 +7,7 @@ import { ClaimsEvidencePanel } from './components/ClaimsEvidencePanel'
 import { ClassificationPanel } from './components/ClassificationPanel'
 import { DevilsAdvocatePanel } from './components/DevilsAdvocatePanel'
 import { DocumentsPanel } from './components/DocumentsPanel'
+import { PanelErrorBoundary } from './components/PanelErrorBoundary'
 import { QuestionPreparationPanel } from './components/QuestionPreparationPanel'
 import {
   buttonStyle,
@@ -275,11 +276,15 @@ function App() {
             switch since the whole component was being unmounted and remounted. */}
         {caseId && (
           <div style={{ display: stage === 'interview' ? 'block' : 'none' }}>
-            <ChatPanel caseId={caseId} onFirstNarrative={() => setFactsSubmitted(true)} />
+            <PanelErrorBoundary panelName="Interview">
+              <ChatPanel caseId={caseId} onFirstNarrative={() => setFactsSubmitted(true)} />
+            </PanelErrorBoundary>
 
             {factsSubmitted && (
               <>
-                <TimelinePanel caseId={caseId} />
+                <PanelErrorBoundary panelName="Timeline">
+                  <TimelinePanel caseId={caseId} />
+                </PanelErrorBoundary>
                 <div style={{ marginTop: '1.25rem', textAlign: 'right' }}>
                   <button style={secondaryButtonStyle} onClick={() => setStage('dashboard')}>
                     Continue to Case Dashboard →
@@ -292,7 +297,9 @@ function App() {
 
         {caseId && factsSubmitted && (
           <div style={{ display: stage === 'dashboard' ? 'block' : 'none' }}>
-            <ClaimsEvidencePanel caseId={caseId} triggerSignal={analyzeSignal} onCaseChanged={() => setCaseStale(true)} />
+            <PanelErrorBoundary panelName="Claims & Evidence">
+              <ClaimsEvidencePanel caseId={caseId} triggerSignal={analyzeSignal} onCaseChanged={() => setCaseStale(true)} />
+            </PanelErrorBoundary>
 
             <div
               style={{
@@ -321,18 +328,32 @@ function App() {
               </button>
             </div>
 
-            <ClassificationPanel caseId={caseId} triggerSignal={analyzeSignal} />
-            <DevilsAdvocatePanel caseId={caseId} triggerSignal={analyzeSignal} />
-            <StrategyPanel caseId={caseId} triggerSignal={analyzeSignal} />
-            <QuestionPreparationPanel caseId={caseId} triggerSignal={analyzeSignal} />
+            <PanelErrorBoundary panelName="Legal Classification & Law Retrieval">
+              <ClassificationPanel caseId={caseId} triggerSignal={analyzeSignal} />
+            </PanelErrorBoundary>
+            <PanelErrorBoundary panelName="Devil's Advocate">
+              <DevilsAdvocatePanel caseId={caseId} triggerSignal={analyzeSignal} />
+            </PanelErrorBoundary>
+            <PanelErrorBoundary panelName="Legal Strategy">
+              <StrategyPanel caseId={caseId} triggerSignal={analyzeSignal} />
+            </PanelErrorBoundary>
+            <PanelErrorBoundary panelName="Question Preparation">
+              <QuestionPreparationPanel caseId={caseId} triggerSignal={analyzeSignal} />
+            </PanelErrorBoundary>
           </div>
         )}
 
         {caseId && factsSubmitted && (
           <div style={{ display: stage === 'review' ? 'block' : 'none' }}>
-            <DocumentsPanel caseId={caseId} />
-            <CaseStrengthPanel caseId={caseId} />
-            <AuditLogPanel caseId={caseId} />
+            <PanelErrorBoundary panelName="Document Drafts">
+              <DocumentsPanel caseId={caseId} />
+            </PanelErrorBoundary>
+            <PanelErrorBoundary panelName="Case Strength">
+              <CaseStrengthPanel caseId={caseId} />
+            </PanelErrorBoundary>
+            <PanelErrorBoundary panelName="Audit Log">
+              <AuditLogPanel caseId={caseId} />
+            </PanelErrorBoundary>
           </div>
         )}
       </main>

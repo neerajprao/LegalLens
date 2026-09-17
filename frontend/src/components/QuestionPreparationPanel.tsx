@@ -32,7 +32,7 @@ export function QuestionPreparationPanel({ caseId, triggerSignal = 0 }: { caseId
 
       {result && !result.insufficient_case_state && (
         <div style={{ marginTop: '0.5rem' }}>
-          {result.questions.map((q, i) => (
+          {(result.questions ?? []).map((q, i) => (
             <div key={i} style={cardStyle}>
               <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
                 <span style={tagStyle}>{q.source}</span>
@@ -45,7 +45,7 @@ export function QuestionPreparationPanel({ caseId, triggerSignal = 0 }: { caseId
               )}
             </div>
           ))}
-          {result.questions.length === 0 && <p style={emptyStateStyle}>No questions generated.</p>}
+          {(result.questions ?? []).length === 0 && <p style={emptyStateStyle}>No questions generated.</p>}
         </div>
       )}
     </section>

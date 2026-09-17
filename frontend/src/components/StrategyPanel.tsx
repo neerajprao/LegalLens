@@ -72,8 +72,8 @@ export function StrategyPanel({ caseId, triggerSignal = 0 }: { caseId: string; t
             <div key={i} style={cardStyle}>
               <strong style={{ color: colors.text, fontSize: '0.92rem' }}>{opt.description}</strong>
               <p style={{ fontSize: '0.87rem', marginTop: '0.3rem' }}>{opt.rationale}</p>
-              {opt.citations.length > 0 && (
-                <p style={{ fontSize: '0.78rem', color: colors.textFaint, marginTop: '0.3rem' }}>{opt.citations.join(' · ')}</p>
+              {(opt.citations ?? []).length > 0 && (
+                <p style={{ fontSize: '0.78rem', color: colors.textFaint, marginTop: '0.3rem' }}>{(opt.citations ?? []).join(' · ')}</p>
               )}
             </div>
           ))}

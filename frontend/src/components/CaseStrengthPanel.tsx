@@ -77,7 +77,7 @@ export function CaseStrengthPanel({ caseId }: { caseId: string }) {
           </div>
 
           <h3>Evidence coverage</h3>
-          {result.evidence_coverage.map((c) => (
+          {(result.evidence_coverage ?? []).map((c) => (
             <div key={c.claim_id} style={cardStyle}>
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem' }}>
                 <span style={{ color: colors.text, fontSize: '0.9rem' }}>{c.description}</span>
@@ -87,32 +87,32 @@ export function CaseStrengthPanel({ caseId }: { caseId: string }) {
               </div>
             </div>
           ))}
-          {result.evidence_coverage.length === 0 && <p style={emptyStateStyle}>No claims recorded yet.</p>}
+          {(result.evidence_coverage ?? []).length === 0 && <p style={emptyStateStyle}>No claims recorded yet.</p>}
 
           <h3>Disputed facts</h3>
           <ul>
-            {result.disputed_facts.map((d) => (
+            {(result.disputed_facts ?? []).map((d) => (
               <li key={d.turn_id}>
                 &ldquo;{d.answer}&rdquo;
                 {d.contradicts_text && <> contradicts &ldquo;{d.contradicts_text}&rdquo;</>} — {d.explanation}
               </li>
             ))}
-            {result.disputed_facts.length === 0 && <li style={emptyStateStyle}>None flagged.</li>}
+            {(result.disputed_facts ?? []).length === 0 && <li style={emptyStateStyle}>None flagged.</li>}
           </ul>
 
           <h3>Legal uncertainty</h3>
           <ul>
-            {result.legal_uncertainty.map((u, i) => (
+            {(result.legal_uncertainty ?? []).map((u, i) => (
               <li key={i}>
                 {u.description}
-                {u.hypotheses.length > 0 && <> ({u.hypotheses.join(', ')})</>}
+                {(u.hypotheses ?? []).length > 0 && <> ({(u.hypotheses ?? []).join(', ')})</>}
               </li>
             ))}
-            {result.legal_uncertainty.length === 0 && <li style={emptyStateStyle}>None flagged.</li>}
+            {(result.legal_uncertainty ?? []).length === 0 && <li style={emptyStateStyle}>None flagged.</li>}
           </ul>
 
           <h3>Counterarguments</h3>
-          {result.counterarguments.map((w, i) => {
+          {(result.counterarguments ?? []).map((w, i) => {
             const sev = w.severity ?? 'unspecified'
             return (
               <div key={i} style={cardStyle}>
@@ -121,12 +121,12 @@ export function CaseStrengthPanel({ caseId }: { caseId: string }) {
               </div>
             )
           })}
-          {result.counterarguments.length === 0 && <p style={emptyStateStyle}>None flagged.</p>}
+          {(result.counterarguments ?? []).length === 0 && <p style={emptyStateStyle}>None flagged.</p>}
 
-          {result.flagged_conflicts.length > 0 && (
+          {(result.flagged_conflicts ?? []).length > 0 && (
             <>
               <h3>Unresolved tension between agents</h3>
-              {result.flagged_conflicts.map((c, i) => (
+              {(result.flagged_conflicts ?? []).map((c, i) => (
                 <div key={i} style={{ ...calloutStyle.danger, marginBottom: '0.5rem' }}>
                   {c.description}
                 </div>

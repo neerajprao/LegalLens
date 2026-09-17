@@ -95,8 +95,8 @@ export function ClassificationPanel({ caseId, triggerSignal = 0 }: { caseId: str
       {result && (
         <div style={{ marginTop: '0.5rem' }}>
           <h3>Candidate categories (hypotheses, not conclusions)</h3>
-          {result.classification.hypotheses.length === 0 && <p style={emptyStateStyle}>No hypotheses could be formed yet.</p>}
-          {result.classification.hypotheses.map((h, i) => (
+          {(result.classification.hypotheses ?? []).length === 0 && <p style={emptyStateStyle}>No hypotheses could be formed yet.</p>}
+          {(result.classification.hypotheses ?? []).map((h, i) => (
             <div key={i} style={cardStyle}>
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem' }}>
                 <strong style={{ color: colors.text }}>{h.category}</strong>
@@ -109,13 +109,13 @@ export function ClassificationPanel({ caseId, triggerSignal = 0 }: { caseId: str
           ))}
 
           <h3>Retrieved provisions</h3>
-          {result.retrieval.insufficient_data ? (
+          {result.retrieval.insufficient_data || !result.retrieval.retrieved ? (
             <div style={calloutStyle.warn}>{result.retrieval.note || 'No verified provisions found for these hypotheses.'}</div>
           ) : (
             Object.entries(result.retrieval.retrieved).map(([category, hits]) => (
               <div key={category} style={{ marginBottom: '0.75rem' }}>
                 <p style={{ fontWeight: 600, color: colors.textDim, fontSize: '0.85rem' }}>{category}</p>
-                {hits.map((hit, i) => (
+                {(hits ?? []).map((hit, i) => (
                   <ProvisionCard key={i} hit={hit} />
                 ))}
               </div>
