@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api, type QuestionPreparationResult } from '../api'
-import { buttonStyle, panelStyle } from './shared'
+import { PanelHeader } from './PanelHeader'
+import { buttonStyle, cardStyle, colors, disabledStyle, emptyStateStyle, panelStyle, tagStyle } from './shared'
 
-export function QuestionPreparationPanel({ caseId }: { caseId: string }) {
+export function QuestionPreparationPanel({ caseId, triggerSignal = 0 }: { caseId: string; triggerSignal?: number }) {
   const [result, setResult] = useState<QuestionPreparationResult | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -15,30 +16,37 @@ export function QuestionPreparationPanel({ caseId }: { caseId: string }) {
     }
   }
 
+  useEffect(() => {
+    if (triggerSignal > 0) run()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [triggerSignal])
+
   return (
     <section style={panelStyle}>
-      <h2>Question &amp; Answer Preparation</h2>
-      <button style={buttonStyle} onClick={run} disabled={loading}>
+      <PanelHeader icon="❓" title="Question & Answer Preparation" subtitle="Likely questions, and only the responses your known facts can actually support." />
+      <button style={{ ...buttonStyle, marginTop: '0.9rem', ...disabledStyle(loading) }} onClick={run} disabled={loading}>
         {loading ? 'Preparing…' : 'Prepare questions'}
       </button>
 
-      {result?.insufficient_case_state && <p>Not enough case information yet.</p>}
+      {result?.insufficient_case_state && <p style={{ ...emptyStateStyle, marginTop: '0.75rem' }}>Not enough case information yet.</p>}
 
       {result && !result.insufficient_case_state && (
-        <ul style={{ marginTop: '0.75rem' }}>
+        <div style={{ marginTop: '0.5rem' }}>
           {result.questions.map((q, i) => (
-            <li key={i} style={{ marginBottom: '0.5rem' }}>
-              <strong>[{q.source}]</strong> {q.question}
-              <br />
+            <div key={i} style={cardStyle}>
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                <span style={tagStyle}>{q.source}</span>
+              </div>
+              <p style={{ marginTop: '0.4rem', color: colors.text, fontWeight: 500 }}>{q.question}</p>
               {q.suggested_response ? (
-                <span>Suggested response: {q.suggested_response}</span>
+                <p style={{ marginTop: '0.35rem', fontSize: '0.87rem' }}>Suggested response: {q.suggested_response}</p>
               ) : (
-                <span style={{ color: '#b7791f' }}>Not yet answerable: {q.gap_note}</span>
+                <p style={{ marginTop: '0.35rem', fontSize: '0.85rem', color: colors.warn }}>Not yet answerable: {q.gap_note}</p>
               )}
-            </li>
+            </div>
           ))}
-          {result.questions.length === 0 && <li>No questions generated.</li>}
-        </ul>
+          {result.questions.length === 0 && <p style={emptyStateStyle}>No questions generated.</p>}
+        </div>
       )}
     </section>
   )

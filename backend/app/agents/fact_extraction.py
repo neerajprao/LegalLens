@@ -14,6 +14,12 @@ Rules:
 - Do not merge distinct people or events into one.
 - Do not tag opinion or allegation as fact.
 - If a statement is ambiguous, tag it "unknown" rather than guessing or silently dropping it.
+- Extract specific, granular details whenever they are present — exact dates and times, names,
+  amounts, locations, document/section references. Do not generalize away specifics that are
+  actually in the text.
+- If the input contains no identifiable case-relevant content — a greeting, small talk, or text
+  too vague to extract anything from — return empty lists for entities, events, and statements.
+  Do not invent or infer content just to have something to return.
 - Output strict JSON only, matching this shape:
   {"entities": [...], "events": [{"description": str, "occurred_at": str, "is_approximate_date": bool}],
    "statements": [{"raw_text": str, "classification": str}]}

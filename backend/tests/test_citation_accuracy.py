@@ -13,9 +13,18 @@ mocks, like test_retrieval_accuracy.py) — not a semantic entailment check
 against a generated claim (that would need an LLM judge and a working API
 key, and stays out of scope here, documented as a known gap below)."""
 
+import re
+
 from app.vector_store import get_collection
 
 _PAGE = 200  # batch size for iterating the full collection via offset
+
+# Mirrors _SECTION_HEADER_RE's optional "(?:\d+\[)?" footnote-marker prefix (app/ingestion.py):
+# several source PDFs print an amended/inserted section as e.g. "2[65A. Special provisions..."
+# rather than plain "65A.". That prefix is real corpus formatting, not a mislabeling — this
+# check needs to tolerate it the same way the chunker's own header regex does, or every
+# footnote-prefixed section (49 across the corpus) would show up as a false-positive mismatch.
+_FOOTNOTE_PREFIX_RE = re.compile(r"^\d+\[")
 
 
 def _iter_all_chunks():
@@ -52,6 +61,7 @@ def test_every_chunks_own_section_number_appears_in_its_own_text():
         # it's attached to, tolerating that same prefix, not just that the string
         # appears anywhere in a long chunk.
         text = doc.lstrip()
+        text = _FOOTNOTE_PREFIX_RE.sub("", text)
         if text.lower().startswith("section"):
             text = text[len("section") :].lstrip()
         if not text.startswith(section_number):

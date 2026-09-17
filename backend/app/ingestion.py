@@ -28,6 +28,7 @@ against the live source, which acquisition policy deliberately avoids
 doing automatically, see CLAUDE.md §12.2).
 """
 
+import bisect
 import hashlib
 import json
 import re
@@ -93,8 +94,43 @@ def effective_dates_for(act_name: str) -> dict:
 # all (its line had already been consumed as part of the prior match) — so section 374's
 # real text was mislabeled as belonging to section 122. Restricting the gap to same-line
 # whitespace only prevents a header match from ever spanning into a following line.
-_SECTION_HEADER_RE = re.compile(r"^[ \t]*(?:Section\s+)?(\d+[A-Z]?)\.[ \t]*(.*)$", re.MULTILINE)
+#
+# The optional `(?:\d+\[)?` prefix handles a second real corpus pattern found while fixing
+# the TOC-duplicate bug (see _drop_table_of_contents_duplicates): amended/inserted sections
+# in several source PDFs (Indian_Evidence_Act_1872, UAPA_1967, NDPS_Act_1985, POCSO_Act_2012,
+# Karnataka_Police_Act_1963 — 49 sections total) are printed with a leading footnote-index
+# marker, e.g. "2[65A. Special provisions as to evidence relating to electronic record.––..."
+# rather than a plain "65A.". Without this prefix, the line didn't start with a digit, so the
+# header regex never matched it at all — the real section body silently got absorbed into
+# whichever preceding section's chunk happened to still be open, meaning that section was
+# unretrievable under its own number. Confirmed live: UAPA_1967's real "15. Terrorist act"
+# section text (prefixed "3[15. Terrorist act .—4[(1)] Whoever does any act...") was
+# completely un-chunked before this fix — only a Table-of-Contents duplicate and an unrelated
+# Schedule list entry both also numbered "15" existed as chunks for that section number.
+_SECTION_HEADER_RE = re.compile(r"^[ \t]*(?:\d+\[)?(?:Section\s+)?(\d+[A-Z]?)\.[ \t]*(.*)$", re.MULTILINE)
 _TITLE_MAX_LEN = 120
+
+# Many source PDFs run a section's title and its body onto the same extracted line —
+# "103. Punishment for murder .—(1) Whoever commits murder shall be punished..." — so the raw
+# header-line remainder isn't just a title, it's a title plus however much body text fit before
+# the next newline. Indian statutes conventionally mark that title/body boundary with a period
+# or colon followed by a dash (".—", ".-", ":--", etc.); cutting there yields the actual title
+# ("Punishment for murder.") instead of a sentence fragment truncated at an arbitrary character
+# count. When a section's title and body legitimately sit on separate lines (common in a table
+# of contents), there's no such delimiter on the header line at all, and the raw text is used
+# as-is — this only ever shortens a line that already contains a title/body boundary.
+_TITLE_BODY_SPLIT_RE = re.compile(r"^(.*?)\s*[.:]\s*[-–—]+")
+
+
+def _clean_section_title(raw: str) -> str:
+    raw = raw.strip()
+    match = _TITLE_BODY_SPLIT_RE.match(raw)
+    if match and len(match.group(1).strip()) >= 3:
+        return match.group(1).strip().rstrip(".:") + "."
+    if len(raw) <= _TITLE_MAX_LEN:
+        return raw
+    truncated = raw[:_TITLE_MAX_LEN].rsplit(" ", 1)[0].strip()
+    return (truncated or raw[:_TITLE_MAX_LEN]) + "…"
 
 
 @dataclass
@@ -110,6 +146,7 @@ class Chunk:
     effective_to: str | None = None
     repealed_by: str | None = None
     successor_of: str | None = None
+    page_number: int | None = None
 
 
 def extract_text(path: Path) -> str:
@@ -119,6 +156,41 @@ def extract_text(path: Path) -> str:
     else:
         raw = path.read_text(errors="ignore")
     return clean_text(raw)
+
+
+def extract_text_with_page_offsets(path: Path) -> tuple[str, list[int]]:
+    """Like extract_text, but also returns page_offsets: page_offsets[i] is the
+    character offset in the returned text where PDF page i+1 (1-indexed, matching
+    the #page=N fragment PDF viewers use) begins. Needed so a retrieved chunk can
+    link back to the actual page it came from — page boundaries are lost the
+    moment per-page text gets joined into one string, so they have to be tracked
+    at extraction time, not recovered afterward.
+
+    Non-PDF (.txt) sources have no page concept: returns a single offset (0) so
+    callers can treat "page 1" uniformly rather than special-casing None."""
+    if path.suffix.lower() != ".pdf":
+        return clean_text(path.read_text(errors="ignore")), [0]
+
+    reader = PdfReader(str(path))
+    parts: list[str] = []
+    offsets: list[int] = []
+    cursor = 0
+    for page in reader.pages:
+        # Cleaned per-page rather than once over the joined document — clean_text's
+        # line-filtering/whitespace-collapsing logic doesn't depend on cross-page
+        # context, so this is equivalent in substance; minor differences only in
+        # exactly how many blank lines collapse at a page boundary.
+        page_text = clean_text(page.extract_text() or "")
+        offsets.append(cursor)
+        parts.append(page_text)
+        cursor += len(page_text) + 1  # +1 for the "\n" join below
+    return "\n".join(parts), offsets
+
+
+def page_number_for_offset(page_offsets: list[int], char_offset: int) -> int:
+    """1-indexed PDF page number containing the given character offset into the
+    text returned by extract_text_with_page_offsets."""
+    return bisect.bisect_right(page_offsets, char_offset)
 
 
 _PAGE_NUMBER_LINE_RE = re.compile(r"^\s*\d{1,4}\s*$")
@@ -155,14 +227,57 @@ def _save_checksums(checksums: dict[str, str]) -> None:
     CHECKSUM_FILE.write_text(json.dumps(checksums, indent=2, sort_keys=True))
 
 
+def _drop_table_of_contents_duplicates(chunks: list[dict]) -> list[dict]:
+    """Indian statute PDFs conventionally open with a Table of Contents that
+    lists every section's number and title again before the substantive
+    text — e.g. "101. Murder." on an early page, followed much later by the
+    real "101. Murder.—Except in the cases hereinafter excepted, culpable
+    homicide is murder,—(a) if..." section body. The section-header regex
+    matches both identically, so chunk_by_section previously produced one
+    tiny title-only chunk per TOC entry alongside the real section chunk.
+
+    This was not a cosmetic duplicate: verified live against the real
+    ingested corpus, a "murder" query returned the 12-character TOC chunk
+    ("101. Murder.", page 6) ranked ABOVE the 6,434-character real section
+    101 body (page 45) — short, title-only text embeds as a near-exact
+    match for a query naming that same topic, so the useless TOC entry was
+    winning retrieval and "view in source" was linking to the TOC page
+    instead of the actual explanatory text.
+
+    Fix: for each section_number, keep only the chunk with the most text.
+    The real section body is always substantially longer than a bare TOC
+    line, so this reliably keeps the substantive chunk and drops the
+    TOC/index duplicates, without needing to detect "is this a TOC" any
+    more specifically than that. Chunks with no section_number (e.g. a
+    document with no headers at all) are left untouched, since there's
+    nothing to deduplicate against."""
+    best_by_section: dict[str, dict] = {}
+    unnumbered: list[dict] = []
+    for chunk in chunks:
+        section_number = chunk["section_number"]
+        if not section_number:
+            unnumbered.append(chunk)
+            continue
+        current_best = best_by_section.get(section_number)
+        if current_best is None or len(chunk["text"]) > len(current_best["text"]):
+            best_by_section[section_number] = chunk
+    kept = list(best_by_section.values()) + unnumbered
+    kept.sort(key=lambda c: c["start_offset"])
+    return kept
+
+
 def chunk_by_section(text: str) -> list[dict]:
     """Splits on section-header lines and returns each section's number,
-    a short title (the text on the header line itself), and its full body
-    text up to the next section header."""
+    a short title (the text on the header line itself), its full body text
+    up to the next section header, and the character offset where it starts
+    (so a caller with page_offsets can resolve it to a PDF page number).
+
+    Table-of-contents duplicates (same section_number, much shorter text)
+    are dropped — see _drop_table_of_contents_duplicates."""
     matches = list(_SECTION_HEADER_RE.finditer(text))
     if not matches:
         stripped = text.strip()
-        return [{"section_number": "", "section_title": "", "text": stripped}] if stripped else []
+        return [{"section_number": "", "section_title": "", "text": stripped, "start_offset": 0}] if stripped else []
 
     chunks = []
     for i, match in enumerate(matches):
@@ -174,16 +289,17 @@ def chunk_by_section(text: str) -> list[dict]:
         chunks.append(
             {
                 "section_number": match.group(1),
-                "section_title": match.group(2).strip()[:_TITLE_MAX_LEN],
+                "section_title": _clean_section_title(match.group(2)),
                 "text": chunk_text,
+                "start_offset": start,
             }
         )
-    return chunks
+    return _drop_table_of_contents_duplicates(chunks)
 
 
 def build_chunks_for_file(path: Path, tier_dir: str) -> list[Chunk]:
     meta = TIER_METADATA[tier_dir]
-    text = extract_text(path)
+    text, page_offsets = extract_text_with_page_offsets(path)
     act_name = path.stem
     dates = effective_dates_for(act_name)
     return [
@@ -195,6 +311,7 @@ def build_chunks_for_file(path: Path, tier_dir: str) -> list[Chunk]:
             tier=meta["tier"],
             jurisdiction=meta["jurisdiction"],
             source_file=path.name,
+            page_number=page_number_for_offset(page_offsets, c["start_offset"]),
             **dates,
         )
         for c in chunk_by_section(text)
@@ -234,6 +351,20 @@ def ingest_all(force: bool = False) -> dict:
             chunks = build_chunks_for_file(file_path, tier_dir)
             if not chunks:
                 continue
+
+            # upsert only ever adds-or-replaces the ids it's given; it never removes an id
+            # that existed before but isn't produced this time. Since chunk_by_section's
+            # output for a given file can legitimately shrink between runs (e.g. the
+            # TOC-duplicate fix below reduced this corpus from ~5,100 to ~2,700 chunks), a
+            # re-ingest without this delete left every id beyond the new, smaller count
+            # sitting in the collection as stale leftover duplicates from before — confirmed
+            # live: a force re-ingest after that fix still reported 5,136 chunks in the
+            # collection, not the ~2,748 the new chunker actually produced, because old
+            # higher-numbered ids for BNS_2023 (and everything else) were never cleared.
+            existing = collection.get(where={"source_file": file_path.name})
+            if existing["ids"]:
+                collection.delete(ids=existing["ids"])
+
             ids = [f"{file_path.stem}-{i}" for i in range(len(chunks))]
             collection.upsert(
                 ids=ids,
@@ -246,6 +377,7 @@ def ingest_all(force: bool = False) -> dict:
                         "tier": c.tier,
                         "jurisdiction": c.jurisdiction,
                         "source_file": c.source_file,
+                        "page_number": c.page_number or 0,
                         # ChromaDB metadata values must be str/int/float/bool, not None —
                         # "" stands in for "not known" (CLAUDE.md §12.3), same convention
                         # section_number/section_title already use above.

@@ -43,8 +43,7 @@ class QuestionPreparationAgent(Agent):
             return {"questions": [], "insufficient_case_state": True}
 
         user_content = json.dumps({"statements": statements, "events": events, "claims": claims})
-        raw = self._call_model(system=SYSTEM_PROMPT, user_content=user_content)
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
+        parsed, raw = self._call_model_json(system=SYSTEM_PROMPT, user_content=user_content)
+        if parsed is None:
             return {"questions": [], "insufficient_case_state": False, "parse_error": raw}
+        return parsed

@@ -23,6 +23,9 @@ Rules:
 - Signal "sufficient": true when you judge the marginal value of further questions on this
   case is now low relative to what's already known — this is one input the orchestrator uses to
   decide whether to keep going, not the only one.
+- Never signal "sufficient": true while basic elements (who was involved, what happened, roughly
+  when, roughly where) are still unknown, or while only one or two thin statements/events are on
+  record. Sparse or vague input is a reason to ask a clarifying question, not a reason to stop.
 
 Output strict JSON only, matching this shape:
   {"next_question": str | null, "rationale": str, "sufficient": bool, "sufficiency_reason": str}
@@ -33,19 +36,43 @@ CONTRADICTION_CHECK_PROMPT = """You are checking a single new interview answer a
 everything already known about a Legal Lens case (statements, events, and prior interview
 answers) for the criminal-law domain, Karnataka, India.
 
-Does the new answer contradict any specific prior statement or answer? A contradiction means
-they cannot both be true as stated (e.g., conflicting dates, conflicting accounts of who did
-what) — not merely that the new answer adds detail or nuance.
+Judge this the way a careful human reader would: read the new answer and each prior item for
+what they actually mean as a whole, in context — never by matching individual words or phrases
+against each other. Different wording, a paraphrase, a synonym, an approximation, or a more
+specific version of the same underlying fact is NOT a contradiction. Only flag one when the two
+items assert something that literally cannot both be true about the same specific fact (the same
+date, the same actor, the same action, the same location) — a genuine factual conflict, not a
+difference in phrasing.
+
+NOT a contradiction (do not flag these):
+- New answer adds detail the old one didn't mention ("near my house" then later "outside my
+  house, at 12 MG Road" — the second is just more specific, not conflicting).
+- New answer uses different words for the same thing ("voice recording" vs. "audio recording";
+  "threatened" vs. "said he would hurt me").
+- New answer gives an approximate time/date where the old one was vague or absent, or vice
+  versa, as long as they're compatible ("that evening" then later "around 9pm that evening").
+- New answer describes a different event, person, or topic entirely — nothing to compare, so
+  nothing to contradict.
+
+IS a contradiction (flag these):
+- Two answers give incompatible specifics about the same fact ("it happened on Monday" vs. "it
+  happened on Wednesday" — cannot both be true about one single event).
+- Two answers name different people in the same role for the same event ("my neighbor Ramesh did
+  it" vs. "my neighbor Suresh did it", referring to the same single incident).
+
+Before deciding, first reason in one or two sentences about whether the new answer and any prior
+item describe the SAME specific fact and actually conflict, or are merely differently worded /
+more detailed / about something else. Only after that reasoning, decide.
 
 Rules:
-- Only flag a genuine contradiction, not elaboration, correction of your own prior
-  misunderstanding, or additional detail.
+- Only flag a genuine, specific factual conflict — never a difference in wording alone.
 - If you flag one, identify exactly which prior item (by the "ref" given for it) conflicts, and
-  explain the conflict in one sentence.
-- Do not invent a contradiction that isn't actually there.
+  explain the conflict in one sentence, referencing the specific fact that conflicts.
+- When genuinely unsure whether something is a real conflict or just a wording difference,
+  do not flag it — a missed contradiction is far less harmful here than a false one.
 
 Output strict JSON only, matching this shape:
-  {"contradiction_found": bool, "contradicts_ref": str | null, "explanation": str}
+  {"reasoning": str, "contradiction_found": bool, "contradicts_ref": str | null, "explanation": str}
 """
 
 
@@ -81,11 +108,10 @@ class DynamicInterviewAgent(Agent):
                 "prior_turns": prior_turns,
             }
         )
-        raw = self._call_model(system=NEXT_QUESTION_PROMPT, user_content=user_content)
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
+        parsed, raw = self._call_model_json(system=NEXT_QUESTION_PROMPT, user_content=user_content)
+        if parsed is None:
             return {"next_question": None, "rationale": "", "sufficient": False, "sufficiency_reason": "", "parse_error": raw}
+        return parsed
 
     def _check_contradiction(self, case_state: dict[str, Any]) -> dict[str, Any]:
         prior_items = case_state.get("prior_items", [])
@@ -94,8 +120,7 @@ class DynamicInterviewAgent(Agent):
             return {"contradiction_found": False, "contradicts_ref": None, "explanation": ""}
 
         user_content = json.dumps({"prior_items": prior_items, "new_answer": new_answer})
-        raw = self._call_model(system=CONTRADICTION_CHECK_PROMPT, user_content=user_content)
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
+        parsed, raw = self._call_model_json(system=CONTRADICTION_CHECK_PROMPT, user_content=user_content)
+        if parsed is None:
             return {"contradiction_found": False, "contradicts_ref": None, "explanation": "", "parse_error": raw}
+        return parsed

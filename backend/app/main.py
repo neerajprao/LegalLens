@@ -1,15 +1,18 @@
 import logging
+from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.agents.document_generation import VALID_DRAFT_TYPES
 from app.db import Base, engine, get_db
+from app.ingestion import RAW_DIR
 from app.models import Case
 from app.orchestrator import Orchestrator
+from app.pdf_highlight import render_highlighted_pdf
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("legal_lens")
@@ -49,6 +52,10 @@ class NarrativeIn(BaseModel):
 
 
 class ClaimIn(BaseModel):
+    description: str
+
+
+class ClaimUpdateIn(BaseModel):
     description: str
 
 
@@ -97,6 +104,55 @@ def create_case(body: CaseIn | None = None, db: Session = Depends(get_db)) -> di
     return {"id": case.id, "status": case.status, "jurisdiction": case.jurisdiction}
 
 
+@app.get("/cases/{case_id}")
+def get_case(case_id: str, db: Session = Depends(get_db)) -> dict:
+    """Lets a client check a locally-remembered case_id still exists before
+    resuming it — e.g. after a page reload, or if the dev DB was reset."""
+    case = db.get(Case, case_id)
+    if case is None:
+        return {"error": "case not found"}
+    return {"id": case.id, "status": case.status, "jurisdiction": case.jurisdiction}
+
+
+@app.get("/documents/{filename}")
+def get_source_document(
+    filename: str,
+    section: str | None = Query(None),
+    page: int | None = Query(None),
+):
+    """Serves a raw source PDF from the ingested legal corpus so a retrieved
+    provision can link straight to it — CLAUDE.md §12.7's "retrieval must be
+    traceable to a real source" carried through to the UI, not just the
+    ingestion metadata. `filename` is resolved with Path(...).name first (so
+    "../../etc/passwd" collapses to just "passwd") and then only matched
+    against files that actually exist under RAW_DIR via rglob — a filename
+    that isn't a real ingested document 404s rather than serving anything.
+
+    When `section` and `page` are both given (the provision's own metadata,
+    already returned to the frontend by classify/strategy/etc.), serves a
+    copy with that section's actual text highlighted (see
+    app/pdf_highlight.py) instead of the plain file — replacing the old
+    approach of a "#page=N&search=term" URL fragment, which only worked in
+    Chromium's built-in viewer and only ever highlighted the short title
+    string, not the real explanatory passage. Falls back to the plain,
+    unhighlighted file if the section can't be located on that page (should
+    be rare given page/section come from real ingestion metadata, but PDF
+    text extraction can still disagree at the margins — a failed highlight
+    attempt should never turn into a broken document link)."""
+    safe_name = Path(filename).name
+    matches = list(RAW_DIR.rglob(safe_name))
+    if not matches:
+        return {"error": "document not found"}
+    path = matches[0]
+
+    if section and page:
+        highlighted = render_highlighted_pdf(path, page, section)
+        if highlighted is not None:
+            return Response(content=highlighted, media_type="application/pdf")
+
+    return FileResponse(path, media_type="application/pdf")
+
+
 @app.post("/cases/{case_id}/narrative")
 def submit_narrative(case_id: str, body: NarrativeIn, db: Session = Depends(get_db)) -> dict:
     case = db.get(Case, case_id)
@@ -117,6 +173,16 @@ def classify_case(case_id: str, db: Session = Depends(get_db)) -> dict:
     return {"case_id": case_id, **result}
 
 
+@app.get("/cases/{case_id}/claims")
+def list_claims(case_id: str, db: Session = Depends(get_db)) -> dict:
+    case = db.get(Case, case_id)
+    if case is None:
+        return {"error": "case not found"}
+    orchestrator = Orchestrator(db)
+    result = orchestrator.list_claims(case)
+    return {"case_id": case_id, **result}
+
+
 @app.post("/cases/{case_id}/claims")
 def create_claim(case_id: str, body: ClaimIn, db: Session = Depends(get_db)) -> dict:
     case = db.get(Case, case_id)
@@ -124,6 +190,38 @@ def create_claim(case_id: str, body: ClaimIn, db: Session = Depends(get_db)) -> 
         return {"error": "case not found"}
     orchestrator = Orchestrator(db)
     return orchestrator.add_claim(case, body.description)
+
+
+@app.post("/cases/{case_id}/claims/suggest")
+def suggest_claims(case_id: str, db: Session = Depends(get_db)) -> dict:
+    """Auto-fills claims from the case's known statements/events (CLAUDE.md
+    §11.2's claim/fact distinction preserved: these are still real Claim
+    rows added to the Case Builder, not a silently-inferred layer on top of
+    it) — grounded in, and only in, what's already on record."""
+    case = db.get(Case, case_id)
+    if case is None:
+        return {"error": "case not found"}
+    orchestrator = Orchestrator(db)
+    result = orchestrator.suggest_claims(case)
+    return {"case_id": case_id, **result}
+
+
+@app.patch("/cases/{case_id}/claims/{claim_id}")
+def update_claim(case_id: str, claim_id: str, body: ClaimUpdateIn, db: Session = Depends(get_db)) -> dict:
+    case = db.get(Case, case_id)
+    if case is None:
+        return {"error": "case not found"}
+    orchestrator = Orchestrator(db)
+    return orchestrator.update_claim(case, claim_id, body.description)
+
+
+@app.delete("/cases/{case_id}/claims/{claim_id}")
+def delete_claim(case_id: str, claim_id: str, db: Session = Depends(get_db)) -> dict:
+    case = db.get(Case, case_id)
+    if case is None:
+        return {"error": "case not found"}
+    orchestrator = Orchestrator(db)
+    return orchestrator.delete_claim(case, claim_id)
 
 
 @app.post("/cases/{case_id}/evidence")
@@ -239,6 +337,16 @@ def interview_next_question(case_id: str, db: Session = Depends(get_db)) -> dict
         return {"error": "case not found"}
     orchestrator = Orchestrator(db)
     result = orchestrator.next_interview_question(case)
+    return {"case_id": case_id, **result}
+
+
+@app.get("/cases/{case_id}/interview/turns")
+def interview_turns(case_id: str, db: Session = Depends(get_db)) -> dict:
+    case = db.get(Case, case_id)
+    if case is None:
+        return {"error": "case not found"}
+    orchestrator = Orchestrator(db)
+    result = orchestrator.list_interview_turns(case)
     return {"case_id": case_id, **result}
 
 

@@ -57,8 +57,7 @@ class LegalStrategyAgent(Agent):
                 "retrieved_provisions": case_state.get("retrieved_provisions", []),
             }
         )
-        raw = self._call_model(system=SYSTEM_PROMPT, user_content=user_content)
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
+        parsed, raw = self._call_model_json(system=SYSTEM_PROMPT, user_content=user_content)
+        if parsed is None:
             return {"options": [], "suggested_best_path": None, "insufficient_case_state": False, "parse_error": raw}
+        return parsed

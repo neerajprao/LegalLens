@@ -1,4 +1,4 @@
-const API_BASE = 'http://localhost:8000'
+export const API_BASE = 'http://localhost:8000'
 
 async function post<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -18,6 +18,12 @@ async function get<T>(path: string): Promise<T> {
 
 async function postForm<T>(path: string, form: FormData): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, { method: 'POST', body: form })
+  if (!res.ok) throw new Error(`${path} failed: ${res.status}`)
+  return res.json()
+}
+
+async function del<T>(path: string): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, { method: 'DELETE' })
   if (!res.ok) throw new Error(`${path} failed: ${res.status}`)
   return res.json()
 }
@@ -56,10 +62,22 @@ export type EvidenceInventoryItem = {
 export type EvidenceInventoryResult = { evidence: EvidenceInventoryItem[] }
 
 export type Hypothesis = { category: string; rationale: string; confidence: string }
+export type ProvisionMetadata = {
+  act_name: string
+  section_number: string
+  section_title: string
+  source_file: string
+  page_number: number
+  jurisdiction: string
+  effective_from: string
+  effective_to: string
+  repealed_by: string
+  successor_of: string
+}
 export type ClassifyResult = {
   classification: { hypotheses: Hypothesis[]; insufficient_facts?: boolean }
   retrieval: {
-    retrieved: Record<string, { text: string; metadata: Record<string, unknown>; distance: number }[]>
+    retrieved: Record<string, { text: string; metadata: ProvisionMetadata; distance: number }[]>
     insufficient_data: boolean
     note: string
   }
@@ -133,12 +151,20 @@ export type InterviewAnswerResult = {
   statement_id: string
   contradiction_found: boolean
   contradicts_ref: string | null
+  contradicts_text: string | null
   contradiction_explanation: string
 }
 
 export type CaseStrengthResult = {
   evidence_coverage: { claim_id: string; description: string; evidence_status: string }[]
-  disputed_facts: { turn_id: string; question: string; answer: string | null; contradicts_ref: string | null; explanation: string }[]
+  disputed_facts: {
+    turn_id: string
+    question: string
+    answer: string | null
+    contradicts_ref: string | null
+    contradicts_text: string | null
+    explanation: string
+  }[]
   legal_uncertainty: { description: string; hypotheses: string[] }[]
   counterarguments: Weakness[]
   opposing_arguments: string[]
@@ -156,12 +182,33 @@ export type AuditLogResult = { entries: AuditLogEntry[] }
 export type PreparedQuestion = { question: string; source: string; suggested_response: string | null; gap_note: string }
 export type QuestionPreparationResult = { questions: PreparedQuestion[]; insufficient_case_state: boolean }
 
+export type CaseSummary = { id: string; status: string; jurisdiction: string; error?: string }
+export type InterviewTurnRecord = {
+  turn_id: string
+  question: string
+  rationale: string
+  answer: string | null
+  contradicts_ref: string | null
+  contradicts_text: string | null
+  contradiction_explanation: string
+  created_at: string
+  answered_at: string | null
+}
+export type InterviewTurnsResult = { turns: InterviewTurnRecord[] }
+
 export const api = {
   createCase: () => post<{ id: string; status: string; jurisdiction: string }>('/cases'),
+  getCase: (caseId: string) => get<CaseSummary>(`/cases/${caseId}`),
+  interviewTurns: (caseId: string) => get<InterviewTurnsResult>(`/cases/${caseId}/interview/turns`),
   submitNarrative: (caseId: string, narrative: string) =>
     post<{ fact_extraction: FactExtractionResult }>(`/cases/${caseId}/narrative`, { narrative }),
   classify: (caseId: string) => post<ClassifyResult>(`/cases/${caseId}/classify`),
+  listClaims: (caseId: string) => get<{ claims: Claim[] }>(`/cases/${caseId}/claims`),
   createClaim: (caseId: string, description: string) => post<Claim>(`/cases/${caseId}/claims`, { description }),
+  suggestClaims: (caseId: string) => post<{ claims: Claim[] }>(`/cases/${caseId}/claims/suggest`),
+  updateClaim: (caseId: string, claimId: string, description: string) =>
+    patch<Claim>(`/cases/${caseId}/claims/${claimId}`, { description }),
+  deleteClaim: (caseId: string, claimId: string) => del<{ id: string; deleted: boolean }>(`/cases/${caseId}/claims/${claimId}`),
   createEvidence: (caseId: string, evidence_type: string, description: string, linked_claim_id: string | null) =>
     post<Evidence>(`/cases/${caseId}/evidence`, { evidence_type, description, linked_claim_id }),
   uploadEvidence: (caseId: string, evidence_type: string, description: string, linked_claim_id: string | null, file: File) => {

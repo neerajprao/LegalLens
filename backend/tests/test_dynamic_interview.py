@@ -128,3 +128,35 @@ def test_submit_answer_no_contradiction(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["contradiction_found"] is False
+
+
+def test_get_case_returns_existing_case():
+    case_id = client.post("/cases").json()["id"]
+    response = client.get(f"/cases/{case_id}")
+    assert response.status_code == 200
+    assert response.json()["id"] == case_id
+
+
+def test_get_case_reports_error_for_unknown_id():
+    response = client.get("/cases/does-not-exist")
+    assert response.status_code == 200
+    assert "error" in response.json()
+
+
+def test_list_interview_turns_reflects_asked_and_answered_state(monkeypatch):
+    case_id = _seed_case_with_facts(monkeypatch)
+    monkeypatch.setattr(LegalClassificationAgent, "_call_model", _fake_classification)
+    monkeypatch.setattr(DynamicInterviewAgent, "_call_model", _fake_next_question)
+    turn = client.post(f"/cases/{case_id}/interview/next-question").json()
+
+    monkeypatch.setattr(DynamicInterviewAgent, "_call_model", _fake_no_contradiction)
+    client.post(f"/cases/{case_id}/interview/answer", json={"turn_id": turn["turn_id"], "answer": "It happened last week."})
+
+    response = client.get(f"/cases/{case_id}/interview/turns")
+    assert response.status_code == 200
+    turns = response.json()["turns"]
+    assert len(turns) == 1
+    assert turns[0]["turn_id"] == turn["turn_id"]
+    assert turns[0]["question"] == "When exactly did this happen?"
+    assert turns[0]["answer"] == "It happened last week."
+    assert turns[0]["answered_at"] is not None

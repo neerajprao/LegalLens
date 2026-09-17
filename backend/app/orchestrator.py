@@ -6,6 +6,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
+from app.agents.claim_synthesis import ClaimSynthesisAgent
 from app.agents.devils_advocate import DevilsAdvocateAgent
 from app.agents.document_generation import DocumentGenerationAgent
 from app.agents.dynamic_interview import DynamicInterviewAgent
@@ -38,6 +39,18 @@ hybrid: this fixed budget as a hard ceiling, the agent's own per-turn
 "sufficient" signal as a soft stop, and the caller can always end early via
 end_interview() regardless of either)."""
 
+INTERVIEW_MINIMUM_QUESTIONS = 3
+"""Floor on the soft-stop side of that same hybrid: a smaller/faster local
+model (qwen2.5:7b-instruct, swapped in 2026-09-16 for latency) was observed
+signaling "sufficient": true after a single extracted statement+event pair
+from the opening narrative — technically an answer to the prompt's own
+"don't call it sufficient while who/what/when/where are still unknown" rule,
+but the model didn't reliably follow it. Rather than depend entirely on
+prompt compliance, the orchestrator now ignores an agent-reported
+"sufficient" until at least this many questions have actually been asked,
+so a thin opening narrative always gets a few real follow-ups regardless of
+how eagerly the model wants to stop."""
+
 
 class CaseStage(str, enum.Enum):
     """Hand-coded state machine driving the interview/case-building process
@@ -65,6 +78,7 @@ class Orchestrator:
         self.document_generation_agent = DocumentGenerationAgent()
         self.dynamic_interview_agent = DynamicInterviewAgent()
         self.question_preparation_agent = QuestionPreparationAgent()
+        self.claim_synthesis_agent = ClaimSynthesisAgent()
 
     def _log(self, case: Case, event_type: str, summary: str, payload: dict | None = None) -> None:
         """Appends one AuditLogEntry. Called after every material Case
@@ -311,6 +325,18 @@ class Orchestrator:
         events = [{"description": e.description, "occurred_at": e.occurred_at} for e in case.events]
         return statements, events
 
+    # Real limit found live (2026-08-26) running Document Generation against the local
+    # Qwen3.5 9B model: with 3 classification hypotheses × 5 retrieval hits each, up to 15
+    # provisions (many duplicates across hypotheses, many irrelevant to the actual drafting
+    # task) were being passed into a single prompt. The model didn't truncate or error — it
+    # lost track of the actual task under that much noisy context and echoed back a fragment
+    # of one of the *input* provisions as if it were the output. A larger cloud model didn't
+    # show this failure mode on the same input, but capping the input is the right fix
+    # regardless of model size: an agent drafting one document doesn't need 15 candidate
+    # provisions to ground it, and less noise is strictly better for citation accuracy too.
+    _MAX_PROVISIONS_FOR_AGENTS = 8
+    _MAX_PROVISION_TEXT_CHARS = 800
+
     @staticmethod
     def _flatten_retrieved_provisions(retrieval_result: dict) -> list[dict]:
         """Flattens LawRetrievalAgent's {category: [hits]} shape into a flat
@@ -319,23 +345,35 @@ class Orchestrator:
         came from. chunk_id (the ChromaDB document id) is what makes
         citation-binding (CLAUDE.md §12.6) possible: it's the one thing a
         generated citation can be checked against programmatically, rather
-        than trusting the model's free-text self-report of what it cited."""
+        than trusting the model's free-text self-report of what it cited.
+
+        Deduplicates by chunk_id (the same section is often retrieved under
+        multiple classification hypotheses) and caps both the number of
+        provisions and each one's text length before handing them to an
+        LLM agent — see _MAX_PROVISIONS_FOR_AGENTS's docstring above for
+        why this is a real, not speculative, fix."""
         flat: list[dict] = []
+        seen_chunk_ids: set[str] = set()
         for hits in retrieval_result.get("retrieved", {}).values():
             for hit in hits:
+                chunk_id = hit.get("chunk_id", "")
+                if chunk_id in seen_chunk_ids:
+                    continue
+                seen_chunk_ids.add(chunk_id)
                 meta = hit.get("metadata", {})
+                text = hit.get("text", "")
                 flat.append(
                     {
-                        "chunk_id": hit.get("chunk_id", ""),
+                        "chunk_id": chunk_id,
                         "act_name": meta.get("act_name", ""),
                         "section_number": meta.get("section_number", ""),
-                        "text": hit.get("text", ""),
+                        "text": text[: Orchestrator._MAX_PROVISION_TEXT_CHARS],
                         "effective_from": meta.get("effective_from", ""),
                         "effective_to": meta.get("effective_to", ""),
                         "repealed_by": meta.get("repealed_by", ""),
                     }
                 )
-        return flat
+        return flat[: Orchestrator._MAX_PROVISIONS_FOR_AGENTS]
 
     @staticmethod
     def _bind_citations(options: list[dict], retrieved_provisions: list[dict]) -> tuple[list[dict], list[str]]:
@@ -521,7 +559,19 @@ class Orchestrator:
         )
 
         next_question = result.get("next_question")
-        if not next_question or result.get("sufficient"):
+        model_says_sufficient = bool(result.get("sufficient"))
+
+        if model_says_sufficient and asked_count < INTERVIEW_MINIMUM_QUESTIONS:
+            # Below the floor: don't honor the model's own "sufficient" verdict. It isn't
+            # obligated to supply a question once it believes it's done, so fall back to a
+            # generic fact-widening one if it didn't give one of its own.
+            next_question = next_question or (
+                "Is there anything else you can tell me — other people involved, specific dates "
+                "or times, locations, or documents/messages related to this?"
+            )
+            model_says_sufficient = False
+
+        if not next_question or model_says_sufficient:
             return {
                 "next_question": None,
                 "turn_id": None,
@@ -529,7 +579,11 @@ class Orchestrator:
                 "sufficiency_reason": result.get("sufficiency_reason", ""),
             }
 
-        turn = InterviewTurn(case_id=case.id, question=next_question, rationale=result.get("rationale", ""))
+        turn = InterviewTurn(
+            case_id=case.id,
+            question=next_question,
+            rationale=result.get("rationale", "") or "Gathering additional detail before concluding the interview.",
+        )
         self.db.add(turn)
         self.db.commit()
         self.db.refresh(turn)
@@ -541,6 +595,27 @@ class Orchestrator:
             "sufficient": False,
             "sufficiency_reason": "",
         }
+
+    def _resolve_ref_text(self, case: Case, ref: str | None) -> str | None:
+        """Resolves a `contradicts_ref` (a Statement.id or InterviewTurn.id —
+        deliberately polymorphic, see InterviewTurn.contradicts_ref's
+        docstring) to the actual text it points at. Without this, every
+        caller that surfaced `contradicts_ref` directly (submit_interview_answer,
+        list_interview_turns, case_strength's disputed_facts) was showing a
+        bare UUID instead of the contradicting statement/answer itself — the
+        id is an internal join key, not something a user can act on. Returns
+        None (rather than the raw ref) if the model hallucinated a ref that
+        doesn't match any real Statement or InterviewTurn, so a caller can
+        tell "resolved but empty" apart from "couldn't be resolved"."""
+        if not ref:
+            return None
+        statement = next((s for s in case.statements if s.id == ref), None)
+        if statement is not None:
+            return statement.raw_text
+        turn = next((t for t in case.interview_turns if t.id == ref), None)
+        if turn is not None and turn.answer:
+            return f"{turn.question} — {turn.answer}"
+        return None
 
     def submit_interview_answer(self, case: Case, turn_id: str, answer: str) -> dict:
         """Persists the answer (§7's audit-logging requirement), records it
@@ -594,6 +669,7 @@ class Orchestrator:
             "statement_id": statement.id,
             "contradiction_found": contradiction.get("contradiction_found", False),
             "contradicts_ref": turn.contradicts_ref,
+            "contradicts_text": self._resolve_ref_text(case, turn.contradicts_ref),
             "contradiction_explanation": turn.contradiction_explanation,
         }
 
@@ -604,6 +680,95 @@ class Orchestrator:
         self.db.refresh(claim)
         self._log(case, "claim_added", f"Claim added: {description}", {"claim_id": claim.id, "description": description})
         return {"id": claim.id, "description": claim.description, "status": claim.status.value}
+
+    def list_claims(self, case: Case) -> dict:
+        """Claims were previously create-only from the API's perspective —
+        nothing read them back as a list, so a client had no way to show
+        claims already on record after a fresh page load. Status is
+        included via the same deterministic computation every other
+        claim-aware agent uses, not the raw (possibly stale) DB column."""
+        statuses = self._compute_claim_statuses(case)
+        return {
+            "claims": [
+                {"id": c.id, "description": c.description, "status": statuses.get(c.id, c.status).value}
+                for c in case.claims
+            ]
+        }
+
+    def update_claim(self, case: Case, claim_id: str, description: str) -> dict:
+        """Only `description` is editable here, deliberately — `status` is a
+        deterministic function of linked evidence (see
+        _compute_claim_statuses), not a field a user can just set by hand;
+        letting that be overridden would reintroduce exactly the kind of
+        unearned confidence CLAUDE.md §15.1 rejects."""
+        claim = next((c for c in case.claims if c.id == claim_id), None)
+        if claim is None:
+            return {"error": "claim not found"}
+        old_description = claim.description
+        claim.description = description
+        self.db.commit()
+        self._log(
+            case,
+            "claim_updated",
+            f"Claim edited: '{old_description}' -> '{description}'",
+            {"claim_id": claim.id, "old_description": old_description, "new_description": description},
+        )
+        statuses = self._compute_claim_statuses(case)
+        return {"id": claim.id, "description": claim.description, "status": statuses.get(claim.id, claim.status).value}
+
+    def delete_claim(self, case: Case, claim_id: str) -> dict:
+        claim = next((c for c in case.claims if c.id == claim_id), None)
+        if claim is None:
+            return {"error": "claim not found"}
+        description = claim.description
+        self.db.delete(claim)
+        self.db.commit()
+        self._log(case, "claim_deleted", f"Claim deleted: {description}", {"claim_id": claim_id, "description": description})
+        return {"id": claim_id, "deleted": True}
+
+    def suggest_claims(self, case: Case) -> dict:
+        """CLAUDE.md's existing three-way fact/claim/evidence distinction
+        (§11.2) already treats a claim as something explicitly added to the
+        Case Builder, never inferred silently — this keeps that: it proposes
+        claims from the statements/events already on record (grounded, not
+        invented, per ClaimSynthesisAgent's own rule) and persists them as
+        real Claim rows immediately, the same as a manually-added claim,
+        rather than returning ungrounded suggestions the UI has to manage
+        separately. Never re-suggests a claim whose text already matches an
+        existing one (case-insensitive), so calling this more than once
+        (e.g., the dashboard mounting again) doesn't pile up duplicates."""
+        statements, events = self._facts_payload(case)
+        result = self.claim_synthesis_agent.run({"statements": statements, "events": events})
+        proposed = result.get("claims", [])
+
+        existing_lower = {c.description.strip().lower() for c in case.claims}
+        created = []
+        for description in proposed:
+            description = description.strip()
+            if not description or description.lower() in existing_lower:
+                continue
+            claim = Claim(case_id=case.id, description=description)
+            self.db.add(claim)
+            existing_lower.add(description.lower())
+            created.append(claim)
+
+        if created:
+            self.db.commit()
+            for claim in created:
+                self.db.refresh(claim)
+            self._log(
+                case,
+                "claims_suggested",
+                f"Auto-suggested {len(created)} claim(s) from known facts.",
+                {"claim_ids": [c.id for c in created], "descriptions": [c.description for c in created]},
+            )
+
+        statuses = self._compute_claim_statuses(case)
+        return {
+            "claims": [
+                {"id": c.id, "description": c.description, "status": statuses.get(c.id, c.status).value} for c in created
+            ]
+        }
 
     def add_evidence(self, case: Case, evidence_type: str, description: str, linked_claim_id: str | None) -> dict:
         evidence = Evidence(
@@ -691,6 +856,28 @@ class Orchestrator:
             ]
         }
 
+    def list_interview_turns(self, case: Case) -> dict:
+        """Lets a client rebuild the interview conversation after a remount
+        (a page reload, or a tab switch that unmounted the chat) instead of
+        losing it — the turns themselves were always persisted; there was
+        just no way to read them back as a list before this."""
+        return {
+            "turns": [
+                {
+                    "turn_id": t.id,
+                    "question": t.question,
+                    "rationale": t.rationale,
+                    "answer": t.answer,
+                    "contradicts_ref": t.contradicts_ref,
+                    "contradicts_text": self._resolve_ref_text(case, t.contradicts_ref),
+                    "contradiction_explanation": t.contradiction_explanation,
+                    "created_at": t.created_at.isoformat(),
+                    "answered_at": t.answered_at.isoformat() if t.answered_at else None,
+                }
+                for t in case.interview_turns
+            ]
+        }
+
     @staticmethod
     def _aggregate_band(supported_count: int, total_claims: int, unresolved_contradictions: int, hypothesis_count: int) -> str:
         """CLAUDE.md §15.2's OPEN QUESTION resolved 2026-08-24: yes, include ONE coarse
@@ -727,6 +914,7 @@ class Orchestrator:
                 "question": t.question,
                 "answer": t.answer,
                 "contradicts_ref": t.contradicts_ref,
+                "contradicts_text": self._resolve_ref_text(case, t.contradicts_ref),
                 "explanation": t.contradiction_explanation,
             }
             for t in case.interview_turns

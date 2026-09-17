@@ -33,8 +33,7 @@ class EvidenceGapAnalysisAgent(Agent):
             return {"suggestions": []}
 
         user_content = json.dumps({"claims": claims})
-        raw = self._call_model(system=SYSTEM_PROMPT, user_content=user_content)
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
+        parsed, raw = self._call_model_json(system=SYSTEM_PROMPT, user_content=user_content)
+        if parsed is None:
             return {"suggestions": [], "parse_error": raw}
+        return parsed
