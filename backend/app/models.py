@@ -135,6 +135,13 @@ class Evidence(Base):
     extracted_text: Mapped[str] = mapped_column(Text, default="")
     extraction_confidence: Mapped[str] = mapped_column(String, default="")
     linked_claim_id: Mapped[str | None] = mapped_column(ForeignKey("claims.id"), nullable=True)
+    # CLAUDE.md §11.3's second bullet ("Is the linked Evidence itself disputed
+    # or of uncertain provenance?") — a real field so Claim.status can
+    # actually distinguish "disputed" from "supported"/"unsupported", not a
+    # placeholder. Set via PATCH /cases/{id}/evidence/{evidence_id}/dispute;
+    # never inferred automatically (no basis for the system to decide
+    # something is disputed on its own).
+    disputed: Mapped[bool] = mapped_column(default=False)
 
     case: Mapped["Case"] = relationship(back_populates="evidence_items")
 

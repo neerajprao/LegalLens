@@ -1,6 +1,13 @@
 import { useState } from 'react'
-import { api, type Claim, type EvidenceGap } from '../api'
+import { api, type Claim, type EvidenceGap, type EvidenceInventoryItem } from '../api'
 import { buttonStyle, panelStyle } from './shared'
+
+const CONFIDENCE_COLOR: Record<string, string> = {
+  high: '#2f855a',
+  medium: '#b7791f',
+  low: '#c05621',
+  none: '#c53030',
+}
 
 export function ClaimsEvidencePanel({ caseId }: { caseId: string }) {
   const [claims, setClaims] = useState<Claim[]>([])
@@ -10,7 +17,9 @@ export function ClaimsEvidencePanel({ caseId }: { caseId: string }) {
   const [linkedClaimId, setLinkedClaimId] = useState('')
   const [file, setFile] = useState<File | null>(null)
   const [gaps, setGaps] = useState<EvidenceGap[] | null>(null)
+  const [inventory, setInventory] = useState<EvidenceInventoryItem[] | null>(null)
   const [loading, setLoading] = useState(false)
+  const [inventoryLoading, setInventoryLoading] = useState(false)
   const [uploadNote, setUploadNote] = useState<string | null>(null)
 
   async function addClaim() {
@@ -37,6 +46,7 @@ export function ClaimsEvidencePanel({ caseId }: { caseId: string }) {
     setEvidenceDescription('')
     setLinkedClaimId('')
     setFile(null)
+    if (inventory !== null) await loadInventory()
   }
 
   async function loadGaps() {
@@ -47,6 +57,27 @@ export function ClaimsEvidencePanel({ caseId }: { caseId: string }) {
     } finally {
       setLoading(false)
     }
+  }
+
+  async function loadInventory() {
+    setInventoryLoading(true)
+    try {
+      const result = await api.listEvidence(caseId)
+      setInventory(result.evidence)
+    } finally {
+      setInventoryLoading(false)
+    }
+  }
+
+  async function toggleDispute(item: EvidenceInventoryItem) {
+    await api.disputeEvidence(caseId, item.id, !item.disputed)
+    await loadInventory()
+  }
+
+  function claimLabel(claimId: string | null): string {
+    if (!claimId) return 'Not linked to a claim'
+    const claim = claims.find((c) => c.id === claimId)
+    return claim ? claim.description : claimId
   }
 
   return (
@@ -111,6 +142,13 @@ export function ClaimsEvidencePanel({ caseId }: { caseId: string }) {
         <button style={buttonStyle} onClick={loadGaps} disabled={loading || claims.length === 0}>
           {loading ? 'Analyzing…' : 'Analyze evidence gaps'}
         </button>
+        <button
+          style={{ ...buttonStyle, marginLeft: '0.5rem' }}
+          onClick={loadInventory}
+          disabled={inventoryLoading}
+        >
+          {inventoryLoading ? 'Loading…' : 'Organize evidence'}
+        </button>
       </div>
 
       {gaps && (
@@ -127,6 +165,46 @@ export function ClaimsEvidencePanel({ caseId }: { caseId: string }) {
             </li>
           ))}
         </ul>
+      )}
+
+      {inventory && (
+        <div style={{ marginTop: '0.75rem' }}>
+          <h3 style={{ fontSize: '1em' }}>Evidence inventory</h3>
+          {inventory.length === 0 && <p style={{ fontSize: '0.85em', color: '#666' }}>No evidence added yet.</p>}
+          {[...new Set(inventory.map((e) => e.linked_claim_id))].map((claimId) => (
+            <div key={claimId ?? 'unlinked'} style={{ marginBottom: '0.5rem' }}>
+              <strong>{claimLabel(claimId)}</strong>
+              <ul>
+                {inventory
+                  .filter((e) => e.linked_claim_id === claimId)
+                  .map((item) => (
+                    <li key={item.id}>
+                      [{item.evidence_type}] {item.description || '(no description)'}
+                      {item.has_file && item.extraction_confidence && (
+                        <span
+                          style={{
+                            marginLeft: '0.5rem',
+                            color: CONFIDENCE_COLOR[item.extraction_confidence] ?? '#666',
+                          }}
+                        >
+                          extraction: {item.extraction_confidence}
+                        </span>
+                      )}
+                      {item.disputed && (
+                        <span style={{ marginLeft: '0.5rem', color: '#c53030' }}>DISPUTED</span>
+                      )}
+                      <button
+                        style={{ ...buttonStyle, marginLeft: '0.5rem', padding: '0.1rem 0.4rem', fontSize: '0.8em' }}
+                        onClick={() => toggleDispute(item)}
+                      >
+                        {item.disputed ? 'Clear dispute' : 'Mark disputed'}
+                      </button>
+                    </li>
+                  ))}
+              </ul>
+            </div>
+          ))}
+        </div>
       )}
     </section>
   )

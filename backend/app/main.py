@@ -71,6 +71,10 @@ class InterviewAnswerIn(BaseModel):
     answer: str
 
 
+class EvidenceDisputeIn(BaseModel):
+    disputed: bool = True
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
@@ -155,6 +159,32 @@ async def upload_evidence(
     return orchestrator.add_evidence_with_file(
         case, evidence_type, description, linked_claim_id, file.filename or "upload", file_bytes
     )
+
+
+@app.get("/cases/{case_id}/evidence")
+def list_evidence(case_id: str, db: Session = Depends(get_db)) -> dict:
+    """CLAUDE.md §10.3/§11: the evidence inventory for a case, organized by
+    claim linkage/extraction confidence/dispute state — supports a real
+    "evidence organization" UI, not just an add-only form."""
+    case = db.get(Case, case_id)
+    if case is None:
+        return {"error": "case not found"}
+    orchestrator = Orchestrator(db)
+    result = orchestrator.list_evidence(case)
+    return {"case_id": case_id, **result}
+
+
+@app.patch("/cases/{case_id}/evidence/{evidence_id}/dispute")
+def dispute_evidence(case_id: str, evidence_id: str, body: EvidenceDisputeIn, db: Session = Depends(get_db)) -> dict:
+    """CLAUDE.md §11.3: flags (or unflags) a piece of evidence as disputed /
+    of uncertain provenance, which feeds Claim.status via
+    Orchestrator._compute_claim_statuses (see its docstring for the four-way
+    status logic)."""
+    case = db.get(Case, case_id)
+    if case is None:
+        return {"error": "case not found"}
+    orchestrator = Orchestrator(db)
+    return orchestrator.set_evidence_disputed(case, evidence_id, body.disputed)
 
 
 @app.post("/cases/{case_id}/evidence-gaps")

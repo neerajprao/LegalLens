@@ -16,6 +16,7 @@ from app.agents.legal_classification import LegalClassificationAgent
 from app.agents.legal_strategy import LegalStrategyAgent
 from app.agents.question_preparation import QuestionPreparationAgent
 from app.config import settings
+from app.encryption import encrypt_bytes
 from app.evidence_extraction import extract_text_and_confidence
 from app.models import (
     AuditLogEntry,
@@ -173,19 +174,87 @@ class Orchestrator:
         """Deterministically computes each claim's evidence-support status
         from the Case Builder's actual linked Evidence rows (CLAUDE.md
         §11.2's fact/evidence distinction enforced here, not by an LLM), and
-        persists it onto the Claim rows. Shared by evidence_gap_analysis and
-        devils_advocate so both see the same status without recomputing it
-        differently. Only "unsupported" vs "supported" (>=1 linked evidence)
-        is computed — "partially_supported"/"disputed" need sub-claim and
-        evidence-disputation modeling this schema doesn't have yet."""
+        persists it onto the Claim rows. Shared by evidence_gap_analysis,
+        devils_advocate, and every other claim-aware agent so they all see
+        the same status without recomputing it differently.
+
+        All four ClaimStatus values are now computed (previously only
+        unsupported/supported — partially_supported/disputed were left
+        unimplemented pending real modeling, not faked):
+        - unsupported: no linked evidence at all.
+        - disputed: at least one linked Evidence row is itself flagged
+          `disputed` (CLAUDE.md §11.3's "is the linked evidence itself
+          disputed or of uncertain provenance?") — takes priority over
+          partial support, since a claim resting partly on contested
+          evidence is a stronger concern than one resting on merely
+          low-confidence-but-uncontested evidence.
+        - partially_supported: has linked evidence, none of it disputed, but
+          at least one item has low/no-confidence extracted text (an OCR/PDF
+          extraction quality problem, not a dispute) — CLAUDE.md §11.3's
+          extraction-confidence signal now actually changes the claim's
+          status, not just a side note in the gap list.
+        - supported: has linked evidence, none disputed, and every item with
+          extracted text has high/medium confidence (metadata-only evidence
+          with no extraction attempted, extraction_confidence == "", doesn't
+          count against it — that's not an extraction-quality problem)."""
         status_by_claim: dict[str, ClaimStatus] = {}
         for claim in case.claims:
             linked = [e for e in case.evidence_items if e.linked_claim_id == claim.id]
-            status = ClaimStatus.supported if linked else ClaimStatus.unsupported
+            if not linked:
+                status = ClaimStatus.unsupported
+            elif any(e.disputed for e in linked):
+                status = ClaimStatus.disputed
+            elif any(e.extraction_confidence in ("low", "none") for e in linked):
+                status = ClaimStatus.partially_supported
+            else:
+                status = ClaimStatus.supported
             status_by_claim[claim.id] = status
             claim.status = status
         self.db.commit()
         return status_by_claim
+
+    def list_evidence(self, case: Case) -> dict:
+        """CLAUDE.md §10.3/§11: an organized view of every Evidence row for a
+        case, distinct from the per-claim gap analysis in
+        evidence_gap_analysis() — this returns the raw evidence inventory
+        itself (what exists, what it's linked to, its extraction/dispute
+        state), which is what an "evidence organization" UI needs to render
+        a real list/grouping rather than only ever seeing evidence as a side
+        effect of adding it."""
+        return {
+            "evidence": [
+                {
+                    "id": e.id,
+                    "evidence_type": e.evidence_type,
+                    "description": e.description,
+                    "linked_claim_id": e.linked_claim_id,
+                    "extraction_confidence": e.extraction_confidence,
+                    "disputed": e.disputed,
+                    "has_file": bool(e.file_path),
+                }
+                for e in case.evidence_items
+            ]
+        }
+
+    def set_evidence_disputed(self, case: Case, evidence_id: str, disputed: bool) -> dict:
+        """CLAUDE.md §11.3: marks a piece of evidence as disputed/of
+        uncertain provenance. Never inferred automatically — only ever set
+        by an explicit caller action, matching the doc's own principle that
+        the system doesn't judge whether a claim is true, only tracks what's
+        been asserted about it."""
+        evidence = next((e for e in case.evidence_items if e.id == evidence_id), None)
+        if evidence is None:
+            return {"error": "evidence not found"}
+        evidence.disputed = disputed
+        self.db.commit()
+        self._log(
+            case,
+            "evidence_dispute_flag_changed",
+            f"Evidence {evidence_id} marked disputed={disputed}",
+            {"evidence_id": evidence_id, "disputed": disputed},
+        )
+        self._compute_claim_statuses(case)
+        return {"id": evidence.id, "disputed": evidence.disputed}
 
     def evidence_gap_analysis(self, case: Case) -> dict:
         """Computes per-claim evidence-support status deterministically, then
@@ -261,6 +330,9 @@ class Orchestrator:
                         "act_name": meta.get("act_name", ""),
                         "section_number": meta.get("section_number", ""),
                         "text": hit.get("text", ""),
+                        "effective_from": meta.get("effective_from", ""),
+                        "effective_to": meta.get("effective_to", ""),
+                        "repealed_by": meta.get("repealed_by", ""),
                     }
                 )
         return flat
@@ -337,7 +409,20 @@ class Orchestrator:
         row. review_status defaults to "ai_draft" (unchanged schema default)
         but is no longer surfaced as a required visible watermark — that
         labeling requirement was removed 2026-08-24 at the user's explicit
-        instruction (see §8.7's DECISION note)."""
+        instruction (see §8.7's DECISION note).
+
+        Citation binding (CLAUDE.md §12.6), extended here from Legal
+        Strategy: the agent self-reports which retrieved chunk_ids it
+        actually cited in `citations_used`, checked against real retrieved
+        provisions the same way _bind_citations does for Legal Strategy.
+        This does NOT scrub a fabricated section number out of the drafted
+        prose itself — that would need sentence-level entailment checking
+        against the source text (CLAUDE.md §12.7's still-open verification
+        mechanism, not built anywhere in this codebase yet) — it only
+        verifies the self-reported citation *list*, surfacing any that don't
+        correspond to a real retrieved chunk rather than silently trusting
+        it, consistent with this project's "surface, don't silently resolve"
+        pattern used elsewhere (_flag_agent_conflicts)."""
         statements, events = self._facts_payload(case)
         status_by_claim = self._compute_claim_statuses(case)
         claim_payloads = [
@@ -360,6 +445,11 @@ class Orchestrator:
             }
         )
 
+        valid_chunk_ids = {p["chunk_id"] for p in retrieved_provisions if p.get("chunk_id")}
+        citations_used = result.get("citations_used", [])
+        verified_citations = [c for c in citations_used if c in valid_chunk_ids]
+        unverified_citations = [c for c in citations_used if c not in valid_chunk_ids]
+
         draft = DocumentDraft(case_id=case.id, draft_type=draft_type, content=result.get("content", ""))
         self.db.add(draft)
         self.db.commit()
@@ -373,16 +463,27 @@ class Orchestrator:
                 "draft_id": draft.id,
                 "draft_type": draft_type,
                 "case_state_used": {"statements": statements, "events": events, "claims": claim_payloads, "retrieved_provisions": retrieved_provisions},
+                "verified_citations": verified_citations,
+                "unverified_citations": unverified_citations,
             },
         )
 
-        return {
+        response = {
             "draft_id": draft.id,
             "draft_type": draft.draft_type.value,
             "content": draft.content,
             "review_status": draft.review_status,
             "insufficient_case_state": result.get("insufficient_case_state", False),
+            "verified_citations": verified_citations,
         }
+        if unverified_citations:
+            response["unverified_citations_dropped"] = unverified_citations
+            response["citation_warning"] = (
+                "This draft reported citing provisions that could not be verified against what was "
+                "actually retrieved from the knowledge base. Review the drafted text for any "
+                "unverifiable section/citation references before use."
+            )
+        return response
 
     def next_interview_question(self, case: Case) -> dict:
         """CLAUDE.md §9.2's question-selection loop. Hard budget check first
@@ -528,14 +629,21 @@ class Orchestrator:
         confidence is stored, not hidden or upgraded — callers of this
         Evidence row (currently none downstream yet; extracted_text isn't
         consumed by any agent) must check extraction_confidence before
-        treating extracted_text as reliable, per §11.3's requirement."""
+        treating extracted_text as reliable, per §11.3's requirement.
+
+        CLAUDE.md §18 encryption-at-rest (implemented 2026-08-26, scoped to
+        evidence files per the user's explicit decision — see
+        app/encryption.py's module docstring): extraction runs on the
+        plaintext bytes in memory FIRST, then only the Fernet-encrypted
+        bytes are written to disk — a plaintext copy never touches disk."""
+        suffix = Path(filename).suffix
+        extracted_text, confidence = extract_text_and_confidence(file_bytes, suffix)
+
         evidence_dir = Path(settings.evidence_store_dir)
         evidence_dir.mkdir(parents=True, exist_ok=True)
-        stored_name = f"{uuid.uuid4()}_{filename}"
+        stored_name = f"{uuid.uuid4()}_{filename}.enc"
         file_path = evidence_dir / stored_name
-        file_path.write_bytes(file_bytes)
-
-        extracted_text, confidence = extract_text_and_confidence(file_path)
+        file_path.write_bytes(encrypt_bytes(file_bytes))
 
         evidence = Evidence(
             case_id=case.id,

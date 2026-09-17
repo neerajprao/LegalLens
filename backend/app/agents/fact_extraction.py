@@ -1,4 +1,3 @@
-import json
 from typing import Any
 
 from app.agents.base import Agent
@@ -25,9 +24,11 @@ class FactExtractionAgent(Agent):
     name = "fact_extraction"
 
     def run(self, case_state: dict[str, Any]) -> dict[str, Any]:
+        """Uses the shared retry-once-on-malformed-JSON helper (base.py) —
+        previously a single json.loads with no recovery, so one malformed
+        response silently discarded an otherwise-usable model turn."""
         narrative = case_state.get("narrative", "")
-        raw = self._call_model(system=SYSTEM_PROMPT, user_content=narrative)
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
+        parsed, raw = self._call_model_json(system=SYSTEM_PROMPT, user_content=narrative)
+        if parsed is None:
             return {"entities": [], "events": [], "statements": [], "parse_error": raw}
+        return parsed

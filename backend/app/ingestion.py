@@ -47,7 +47,53 @@ TIER_METADATA = {
     "03-karnataka-state-laws": {"tier": 3, "jurisdiction": "India - Karnataka"},
 }
 
-_SECTION_HEADER_RE = re.compile(r"^[ \t]*(?:Section\s+)?(\d+[A-Z]?)\.\s*(.*)$", re.MULTILINE)
+# CLAUDE.md §12.3's firm data-model requirement: every provision carries
+# effective_from/effective_to/repealed_by (or its inverse, successor_of), and
+# the Law Retrieval Agent must eventually select by event date, not query
+# date. Dates below are best-effort from public enactment/commencement
+# knowledge, keyed by act_name (the file stem, matching build_chunks_for_file's
+# existing act_name convention) — NOT independently re-verified against
+# e-Gazette per document, consistent with CLAUDE.md §12.2's acquisition
+# policy (this project doesn't automate fetching the live authoritative
+# source). An act with no entry here gets nulls for all three fields rather
+# than a guessed date — an absent effective date is more honest than a wrong
+# one.
+ACT_EFFECTIVE_DATES: dict[str, dict] = {
+    "BNS_2023": {"effective_from": "2024-07-01", "effective_to": None, "repealed_by": None, "successor_of": "IPC_1860"},
+    "BNSS_2023": {"effective_from": "2024-07-01", "effective_to": None, "repealed_by": None, "successor_of": "CrPC_1973"},
+    "BSA_2023": {"effective_from": "2024-07-01", "effective_to": None, "repealed_by": None, "successor_of": "Indian_Evidence_Act_1872"},
+    "IPC_1860": {"effective_from": "1862-01-01", "effective_to": "2024-06-30", "repealed_by": "BNS_2023", "successor_of": None},
+    "CrPC_1973": {"effective_from": "1974-04-01", "effective_to": "2024-06-30", "repealed_by": "BNSS_2023", "successor_of": None},
+    "Indian_Evidence_Act_1872": {"effective_from": "1872-09-01", "effective_to": "2024-06-30", "repealed_by": "BSA_2023", "successor_of": None},
+    "POCSO_Act_2012": {"effective_from": "2012-11-14", "effective_to": None, "repealed_by": None, "successor_of": None},
+    "NDPS_Act_1985": {"effective_from": "1985-11-14", "effective_to": None, "repealed_by": None, "successor_of": None},
+    "UAPA_1967": {"effective_from": "1967-12-30", "effective_to": None, "repealed_by": None, "successor_of": None},
+    "IT_Act_2000": {"effective_from": "2000-10-17", "effective_to": None, "repealed_by": None, "successor_of": None},
+    "Karnataka_Police_Act_1963": {"effective_from": "1965-01-01", "effective_to": None, "repealed_by": None, "successor_of": None},
+    "KCOCA_2000": {"effective_from": "2000-01-03", "effective_to": None, "repealed_by": None, "successor_of": None},
+    "Karnataka_Goonda_Act_1985": {"effective_from": "1985-01-01", "effective_to": None, "repealed_by": None, "successor_of": None},
+}
+
+_NULL_EFFECTIVE_DATES = {"effective_from": None, "effective_to": None, "repealed_by": None, "successor_of": None}
+
+
+def effective_dates_for(act_name: str) -> dict:
+    """Returns the {effective_from, effective_to, repealed_by, successor_of}
+    metadata for an act, or all-null if not in ACT_EFFECTIVE_DATES — an
+    unlisted act stays honestly unlabeled rather than defaulting to a
+    plausible-looking guess."""
+    return dict(ACT_EFFECTIVE_DATES.get(act_name, _NULL_EFFECTIVE_DATES))
+
+# The `\s*` between the section number and its title deliberately excludes newlines
+# ([ \t]* only, not \s*) — CLAUDE.md §20/§12.7 test coverage caught a real corpus bug this
+# regex used to cause: with \s*, a stray "Section 122." cross-reference line in
+# CrPC_1973.pdf's extracted text absorbed the blank line after it AND the entire next
+# real section header line ("374. Appeals from convictions...") into ITS OWN "title"
+# capture group, which also meant finditer never saw "374." as a separate header match at
+# all (its line had already been consumed as part of the prior match) — so section 374's
+# real text was mislabeled as belonging to section 122. Restricting the gap to same-line
+# whitespace only prevents a header match from ever spanning into a following line.
+_SECTION_HEADER_RE = re.compile(r"^[ \t]*(?:Section\s+)?(\d+[A-Z]?)\.[ \t]*(.*)$", re.MULTILINE)
 _TITLE_MAX_LEN = 120
 
 
@@ -60,6 +106,10 @@ class Chunk:
     tier: int
     jurisdiction: str
     source_file: str
+    effective_from: str | None = None
+    effective_to: str | None = None
+    repealed_by: str | None = None
+    successor_of: str | None = None
 
 
 def extract_text(path: Path) -> str:
@@ -135,6 +185,7 @@ def build_chunks_for_file(path: Path, tier_dir: str) -> list[Chunk]:
     meta = TIER_METADATA[tier_dir]
     text = extract_text(path)
     act_name = path.stem
+    dates = effective_dates_for(act_name)
     return [
         Chunk(
             text=c["text"],
@@ -144,6 +195,7 @@ def build_chunks_for_file(path: Path, tier_dir: str) -> list[Chunk]:
             tier=meta["tier"],
             jurisdiction=meta["jurisdiction"],
             source_file=path.name,
+            **dates,
         )
         for c in chunk_by_section(text)
     ]
@@ -194,6 +246,13 @@ def ingest_all(force: bool = False) -> dict:
                         "tier": c.tier,
                         "jurisdiction": c.jurisdiction,
                         "source_file": c.source_file,
+                        # ChromaDB metadata values must be str/int/float/bool, not None —
+                        # "" stands in for "not known" (CLAUDE.md §12.3), same convention
+                        # section_number/section_title already use above.
+                        "effective_from": c.effective_from or "",
+                        "effective_to": c.effective_to or "",
+                        "repealed_by": c.repealed_by or "",
+                        "successor_of": c.successor_of or "",
                     }
                     for c in chunks
                 ],

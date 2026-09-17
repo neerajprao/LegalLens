@@ -20,8 +20,13 @@ Hard rules — these are non-negotiable:
 - Unsupported claims (evidence_status: "unsupported") must not be stated as established fact in
   the document — phrase them as the complainant's assertion, not as fact.
 
+- If retrieved_provisions is non-empty and you cite any of them in the drafted content, list the
+  exact chunk_id values (from retrieved_provisions) of every provision you actually cited, in
+  "citations_used". Do not list a chunk_id you didn't cite, and do not invent one that isn't in
+  retrieved_provisions.
+
 Output strict JSON only, matching this shape:
-  {"content": str, "insufficient_case_state": bool}
+  {"content": str, "citations_used": [str, ...], "insufficient_case_state": bool}
 """
 
 VALID_DRAFT_TYPES = {
@@ -61,12 +66,13 @@ class DocumentGenerationAgent(Agent):
                 "retrieved_provisions": case_state.get("retrieved_provisions", []),
             }
         )
-        raw = self._call_model(system=SYSTEM_PROMPT, user_content=user_content, max_tokens=4096)
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
+        parsed, raw = self._call_model_json(system=SYSTEM_PROMPT, user_content=user_content, max_tokens=4096)
+        if parsed is None:
             return {
                 "content": "Draft generation failed to produce valid output.",
+                "citations_used": [],
                 "insufficient_case_state": False,
                 "parse_error": raw,
             }
+        parsed.setdefault("citations_used", [])
+        return parsed

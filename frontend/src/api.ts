@@ -22,6 +22,16 @@ async function postForm<T>(path: string, form: FormData): Promise<T> {
   return res.json()
 }
 
+async function patch<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(`${path} failed: ${res.status}`)
+  return res.json()
+}
+
 export type Statement = { raw_text: string; classification: string }
 export type EventItem = { description: string; occurred_at: string; is_approximate_date: boolean }
 
@@ -34,6 +44,16 @@ export type FactExtractionResult = {
 
 export type Claim = { id: string; description: string; status: string }
 export type Evidence = { id: string; evidence_type: string; linked_claim_id: string | null }
+export type EvidenceInventoryItem = {
+  id: string
+  evidence_type: string
+  description: string
+  linked_claim_id: string | null
+  extraction_confidence: string
+  disputed: boolean
+  has_file: boolean
+}
+export type EvidenceInventoryResult = { evidence: EvidenceInventoryItem[] }
 
 export type Hypothesis = { category: string; rationale: string; confidence: string }
 export type ClassifyResult = {
@@ -95,6 +115,9 @@ export type DocumentResult = {
   content: string
   review_status: string
   insufficient_case_state: boolean
+  verified_citations?: string[]
+  unverified_citations_dropped?: string[]
+  citation_warning?: string
 }
 
 export type InterviewQuestionResult = {
@@ -150,6 +173,9 @@ export const api = {
     return postForm<EvidenceUploadResult>(`/cases/${caseId}/evidence/upload`, form)
   },
   evidenceGaps: (caseId: string) => post<EvidenceGapsResult>(`/cases/${caseId}/evidence-gaps`),
+  listEvidence: (caseId: string) => get<EvidenceInventoryResult>(`/cases/${caseId}/evidence`),
+  disputeEvidence: (caseId: string, evidenceId: string, disputed: boolean) =>
+    patch<{ id: string; disputed: boolean }>(`/cases/${caseId}/evidence/${evidenceId}/dispute`, { disputed }),
   devilsAdvocate: (caseId: string) => post<DevilsAdvocateResult>(`/cases/${caseId}/devils-advocate`),
   strategy: (caseId: string, acknowledged: boolean) =>
     post<StrategyResult>(`/cases/${caseId}/strategy`, { acknowledged }),

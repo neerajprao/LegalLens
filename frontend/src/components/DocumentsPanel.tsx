@@ -46,9 +46,22 @@ export function DocumentsPanel({ caseId }: { caseId: string }) {
       {result && (
         <div style={{ marginTop: '0.75rem' }}>
           {result.insufficient_case_state && <p>Not enough case information yet to draft this document.</p>}
+          {result.citation_warning && (
+            <p style={{ background: '#fed7d7', padding: '0.5rem', borderRadius: 4, fontSize: '0.9em' }}>
+              {result.citation_warning}
+              {result.unverified_citations_dropped && result.unverified_citations_dropped.length > 0 && (
+                <> Unverified: {result.unverified_citations_dropped.join(', ')}</>
+              )}
+            </p>
+          )}
           <pre style={{ whiteSpace: 'pre-wrap', background: '#f7f7f7', padding: '0.75rem', borderRadius: 6 }}>
             {result.content}
           </pre>
+          {result.verified_citations && result.verified_citations.length > 0 && (
+            <p style={{ fontSize: '0.8em', color: '#666' }}>
+              Verified citations: {result.verified_citations.join(', ')}
+            </p>
+          )}
         </div>
       )}
     </section>
