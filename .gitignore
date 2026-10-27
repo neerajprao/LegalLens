@@ -21,5 +21,9 @@ data/vector_store/
 # Evidence-file encryption key (auto-generated for local dev, see app/encryption.py) — a secret
 data/.evidence_encryption_key
 
+# graphify knowledge graph (local tooling output + its ignore file)
+graphify-out/
+.graphifyignore
+
 # OS
 .DS_Store

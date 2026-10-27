@@ -53,7 +53,7 @@ VENV_PYTHON = VENV / ("Scripts/python.exe" if sys.platform == "win32" else "bin/
 BACKEND_PORT = 8000
 FRONTEND_PORT = 5173
 OLLAMA_URL = "http://localhost:11434"
-DEFAULT_MODEL = "qwen3.5:9b-q4_K_M"
+DEFAULT_MODEL = "qwen2.5:7b-instruct"  # keep in sync with backend/app/config.py's ollama_model
 
 
 def _print_step(title: str) -> None:
